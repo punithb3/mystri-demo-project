@@ -1,0 +1,65 @@
+const currency = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' });
+const money = n => currency.format(n);
+const text = (tag, value, className = '') => {
+  const node = document.createElement(tag);
+  node.textContent = value;
+  node.className = className;
+  return node;
+};
+
+async function refresh() {
+  const status = document.querySelector('#status').value;
+  const responses = await Promise.all([fetch('/api/overview'), fetch(`/api/invoices?status=${status}`)]);
+  if (responses.some(r => !r.ok)) throw new Error('Could not refresh the register.');
+  const [data, rows] = await Promise.all(responses.map(r => r.json()));
+  document.querySelector('#invoice-count').textContent = data.summary.invoice_count;
+  document.querySelector('#open-count').textContent = data.summary.open_count;
+  document.querySelector('#outstanding').textContent = money(data.summary.outstanding);
+  const body = document.querySelector('#invoices');
+  body.replaceChildren();
+  rows.forEach(r => {
+    const row = document.createElement('tr');
+    [r.customer_name, r.invoice_number, r.due_date].forEach(v => row.append(text('td', v)));
+    [r.amount, r.paid, r.balance].forEach(v => row.append(text('td', money(v), 'number')));
+    row.append(text('td', r.status));
+    body.append(row);
+  });
+  const unmatched = document.querySelector('#unmatched');
+  unmatched.replaceChildren(...data.unmatched_payments.map(p => text('li', `${p.payment_id} · ${p.customer_id} / ${p.invoice_number} · ${money(p.amount)}`)));
+  if (!data.unmatched_payments.length) unmatched.append(text('li', 'No unmatched payments.'));
+  document.querySelector('#page-error').textContent = '';
+}
+
+async function submitImport(form) {
+  const feedback = form.querySelector('.feedback');
+  const button = form.querySelector('button');
+  button.disabled = true;
+  feedback.textContent = 'Importing…';
+  try {
+    const fileInput = form.querySelector('input');
+    const csv = await fileInput.files[0].text();
+    const response = await fetch(`/api/import?kind=${form.dataset.kind}`, {
+      method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: csv
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error || 'Unknown error');
+    }
+    let msg = `Import complete: ${result.imported} imported, ${result.skipped} skipped, ${result.rejected} rejected.`;
+    if (result.rejected > 0) {
+      const errors = result.errors.map(e => `Line ${e.line}: ${e.reason}`).join(' | ');
+      msg += ` Errors: ${errors}`;
+    }
+    feedback.textContent = msg;
+    fileInput.value = ''; // clear the file input
+    await refresh();
+  } catch (error) {
+    feedback.textContent = `Import failed: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.querySelector('#status').addEventListener('change', () => refresh().catch(e => { document.querySelector('#page-error').textContent = e.message; }));
+document.querySelectorAll('form[data-kind]').forEach(form => form.addEventListener('submit', e => { e.preventDefault(); submitImport(form); }));
+refresh().catch(e => { document.querySelector('#page-error').textContent = e.message; });
